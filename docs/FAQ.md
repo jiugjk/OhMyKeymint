@@ -343,7 +343,11 @@ decide whether OMK handled the request.
 
 Android version, KeyMint interface version, and attested OS version are
 different values. The Android release alone does not determine the exposed
-KeyMint version; that also depends on the device maker's system files.
+KeyMint version. OMK uses the VINTF-effective AIDL version of the matching
+KeyMint device instance. An explicit version in the device maker's listing is
+used when present. A listed instance with no usable version tag is version 1
+(shown as `@1`). Only when no matching KeyMint instance is listed does OMK
+fall back to a version derived from the Android major.
 
 In `config.toml`, `os_version = "auto"` detects the Android major each time the
 keymint process starts, including the first start after a system-version

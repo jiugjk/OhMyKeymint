@@ -35,7 +35,13 @@ pub(crate) fn strongbox_keymint_present() -> bool {
 }
 
 pub(crate) fn resolve_hardware_profile(security_level: SecurityLevel) -> KeyMintHardwareProfile {
-    let version_number = probe_keymint_version_from_vintf(security_level)
+    let version_number = security_level_instance(security_level)
+        .map(|instance| {
+            resolve_keymint_version_number_from_vintf_xmls(
+                vintf_manifest_texts().iter().map(String::as_str),
+                instance,
+            )
+        })
         .unwrap_or_else(fallback_keymint_version_from_android);
 
     if let Some(profile) = resolve_property_profile_with(
@@ -229,32 +235,48 @@ fn system_keymint_service_name(security_level: SecurityLevel) -> Option<&'static
     }
 }
 
-fn probe_keymint_version_from_vintf(security_level: SecurityLevel) -> Option<i32> {
-    let instance = security_level_instance(security_level)?;
-
+fn vintf_manifest_texts() -> Vec<String> {
+    let mut xmls = Vec::new();
     for path in kmr_common::vintf::manifest_paths() {
         let Ok(contents) = std::fs::read_to_string(&path) else {
             continue;
         };
-        match kmr_common::vintf::parse_aidl_hal_version_xml(
+        if let Err(error) = kmr_common::vintf::parse_aidl_hal_instance_xml(
             &contents,
             KEYMINT_HAL_NAME,
             KEYMINT_DEVICE_INTERFACE,
-            instance,
-            normalize_keymint_version,
+            "default",
         ) {
-            Ok(Some(version)) => return Some(version),
-            Ok(None) => {}
-            Err(error) => {
-                log::warn!(
-                    "Ignoring invalid VINTF manifest {}: {error:#}",
-                    path.display()
-                );
-            }
+            log::warn!(
+                "Ignoring invalid VINTF manifest {}: {error:#}",
+                path.display()
+            );
+            continue;
         }
+        xmls.push(contents);
     }
+    xmls
+}
 
-    None
+fn resolve_keymint_version_from_vintf_xmls<'a>(
+    xmls: impl IntoIterator<Item = &'a str>,
+    instance: &str,
+) -> Option<i32> {
+    kmr_common::vintf::resolve_aidl_hal_version_xmls(
+        xmls,
+        KEYMINT_HAL_NAME,
+        KEYMINT_DEVICE_INTERFACE,
+        instance,
+        normalize_keymint_version,
+    )
+}
+
+fn resolve_keymint_version_number_from_vintf_xmls<'a>(
+    xmls: impl IntoIterator<Item = &'a str>,
+    instance: &str,
+) -> i32 {
+    resolve_keymint_version_from_vintf_xmls(xmls, instance)
+        .unwrap_or_else(fallback_keymint_version_from_android)
 }
 
 fn keymint_instance_declared_in_vintf(security_level: SecurityLevel) -> bool {
@@ -545,6 +567,79 @@ mod tests {
         assert!(ensure_system_hardware_security_level(&info, SecurityLevel::STRONGBOX).is_ok());
         assert!(
             profile_from_system_hardware_info(&info, SecurityLevel::STRONGBOX, KEYMINT_V4).is_err()
+        );
+    }
+
+    #[test]
+    fn qti_omitted_vintf_version_advertises_v1_not_android_major() {
+        let xml = r#"
+<manifest version="1.0" type="device">
+    <hal format="aidl">
+        <name>android.hardware.security.keymint</name>
+        <fqname>IKeyMintDevice/default</fqname>
+        <fqname>IRemotelyProvisionedComponent/default</fqname>
+    </hal>
+</manifest>
+"#;
+
+        assert_eq!(
+            resolve_keymint_version_from_vintf_xmls([xml], "default"),
+            normalize_keymint_version(kmr_common::vintf::AIDL_OMITTED_VERSION)
+        );
+        assert_eq!(
+            resolve_keymint_version_number_from_vintf_xmls([xml], "default"),
+            normalize_keymint_version(kmr_common::vintf::AIDL_OMITTED_VERSION).unwrap()
+        );
+        assert_eq!(
+            resolve_keymint_version_from_vintf_xmls([xml], "strongbox"),
+            None
+        );
+    }
+
+    #[test]
+    fn explicit_vintf_version_is_advertised() {
+        let xml = r#"
+<manifest version="1.0" type="device">
+    <hal format="aidl">
+        <name>android.hardware.security.keymint</name>
+        <version>4</version>
+        <interface>
+            <name>IKeyMintDevice</name>
+            <instance>strongbox</instance>
+        </interface>
+    </hal>
+</manifest>
+"#;
+
+        assert_eq!(
+            resolve_keymint_version_number_from_vintf_xmls([xml], "strongbox"),
+            normalize_keymint_version(4).unwrap()
+        );
+    }
+
+    #[test]
+    fn no_keymint_instance_uses_android_major_fallback_not_implicit_v1() {
+        let xml = r#"
+<manifest version="1.0" type="device">
+    <hal format="aidl">
+        <name>android.hardware.foo</name>
+        <version>4</version>
+        <fqname>IKeyMintDevice/default</fqname>
+    </hal>
+</manifest>
+"#;
+
+        assert_eq!(
+            resolve_keymint_version_from_vintf_xmls([xml], "default"),
+            None
+        );
+        assert_eq!(
+            resolve_keymint_version_number_from_vintf_xmls([xml], "default"),
+            fallback_keymint_version_from_android()
+        );
+        assert_eq!(
+            resolve_keymint_version_number_from_vintf_xmls([], "default"),
+            fallback_keymint_version_from_android()
         );
     }
 }

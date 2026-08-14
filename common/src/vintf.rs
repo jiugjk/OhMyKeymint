@@ -71,6 +71,9 @@ pub fn manifest_paths() -> Vec<PathBuf> {
     paths
 }
 
+/// AOSP VINTF default for an AIDL HAL whose `<version>` is omitted.
+pub const AIDL_OMITTED_VERSION: i32 = 1;
+
 pub fn parse_aidl_hal_version_xml(
     xml: &str,
     hal_name: &str,
@@ -97,6 +100,40 @@ pub fn parse_aidl_hal_version_xml(
     }
 
     Ok(None)
+}
+
+/// Resolve an AIDL HAL version from VINTF manifest texts.
+///
+/// Explicit usable versions across the scanned texts win. A matching instance
+/// with no usable `<version>` is [`AIDL_OMITTED_VERSION`]. Absence of a matching
+/// instance is `None`. Unrelated HALs and malformed XML are ignored.
+pub fn resolve_aidl_hal_version_xmls<'a>(
+    xmls: impl IntoIterator<Item = &'a str>,
+    hal_name: &str,
+    interface: &str,
+    instance: &str,
+    normalize: impl Fn(i32) -> Option<i32>,
+) -> Option<i32> {
+    let mut declared = false;
+    let mut explicit = None;
+    for xml in xmls {
+        match parse_aidl_hal_version_xml(xml, hal_name, interface, instance, &normalize) {
+            Ok(Some(version)) if explicit.is_none() => explicit = Some(version),
+            Ok(_) => {}
+            Err(_) => {}
+        }
+        if let Ok(true) = parse_aidl_hal_instance_xml(xml, hal_name, interface, instance) {
+            declared = true;
+        }
+    }
+
+    if let Some(version) = explicit {
+        Some(version)
+    } else if declared {
+        normalize(AIDL_OMITTED_VERSION)
+    } else {
+        None
+    }
 }
 
 pub fn parse_aidl_hal_instance_xml(
@@ -300,6 +337,187 @@ mod tests {
                 normalize_keystore2_test_version,
             )
             .unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn omitted_aidl_version_on_declared_instance_is_effective_v1() {
+        let qti_default = r#"
+<manifest version="1.0" type="device">
+    <hal format="aidl">
+        <name>android.hardware.security.keymint</name>
+        <fqname>IKeyMintDevice/default</fqname>
+        <fqname>IRemotelyProvisionedComponent/default</fqname>
+    </hal>
+</manifest>
+"#;
+        let qti_strongbox = r#"
+<manifest version="1.0" type="device">
+    <hal format="aidl">
+        <name>android.hardware.security.keymint</name>
+        <interface>
+            <name>IKeyMintDevice</name>
+            <instance>strongbox</instance>
+        </interface>
+    </hal>
+</manifest>
+"#;
+
+        assert_eq!(
+            parse_aidl_hal_version_xml(
+                qti_default,
+                KEYMINT_HAL_NAME,
+                KEYMINT_DEVICE_INTERFACE,
+                "default",
+                normalize_keymint_test_version,
+            )
+            .unwrap(),
+            None
+        );
+        assert_eq!(
+            resolve_aidl_hal_version_xmls(
+                [qti_default],
+                KEYMINT_HAL_NAME,
+                KEYMINT_DEVICE_INTERFACE,
+                "default",
+                normalize_keymint_test_version,
+            ),
+            normalize_keymint_test_version(AIDL_OMITTED_VERSION)
+        );
+        assert_eq!(
+            resolve_aidl_hal_version_xmls(
+                [qti_strongbox],
+                KEYMINT_HAL_NAME,
+                KEYMINT_DEVICE_INTERFACE,
+                "strongbox",
+                normalize_keymint_test_version,
+            ),
+            normalize_keymint_test_version(AIDL_OMITTED_VERSION)
+        );
+        assert_eq!(
+            resolve_aidl_hal_version_xmls(
+                [qti_default],
+                KEYMINT_HAL_NAME,
+                KEYMINT_DEVICE_INTERFACE,
+                "strongbox",
+                normalize_keymint_test_version,
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn explicit_usable_version_wins_over_omitted_default() {
+        let omitted = r#"
+<manifest version="1.0" type="device">
+    <hal format="aidl">
+        <name>android.hardware.security.keymint</name>
+        <fqname>IKeyMintDevice/default</fqname>
+    </hal>
+</manifest>
+"#;
+        let explicit = r#"
+<manifest version="1.0" type="device">
+    <hal format="aidl">
+        <name>android.hardware.security.keymint</name>
+        <version>4</version>
+        <fqname>IKeyMintDevice/default</fqname>
+    </hal>
+</manifest>
+"#;
+        let unusable = r#"
+<manifest version="1.0" type="device">
+    <hal format="aidl">
+        <name>android.hardware.security.keymint</name>
+        <version>99</version>
+        <fqname>IKeyMintDevice/default</fqname>
+    </hal>
+</manifest>
+"#;
+
+        assert_eq!(
+            resolve_aidl_hal_version_xmls(
+                [explicit],
+                KEYMINT_HAL_NAME,
+                KEYMINT_DEVICE_INTERFACE,
+                "default",
+                normalize_keymint_test_version,
+            ),
+            normalize_keymint_test_version(4)
+        );
+        assert_eq!(
+            resolve_aidl_hal_version_xmls(
+                [omitted, explicit],
+                KEYMINT_HAL_NAME,
+                KEYMINT_DEVICE_INTERFACE,
+                "default",
+                normalize_keymint_test_version,
+            ),
+            normalize_keymint_test_version(4)
+        );
+        assert_eq!(
+            resolve_aidl_hal_version_xmls(
+                [explicit, omitted],
+                KEYMINT_HAL_NAME,
+                KEYMINT_DEVICE_INTERFACE,
+                "default",
+                normalize_keymint_test_version,
+            ),
+            normalize_keymint_test_version(4)
+        );
+        assert_eq!(
+            resolve_aidl_hal_version_xmls(
+                [unusable],
+                KEYMINT_HAL_NAME,
+                KEYMINT_DEVICE_INTERFACE,
+                "default",
+                normalize_keymint_test_version,
+            ),
+            normalize_keymint_test_version(AIDL_OMITTED_VERSION)
+        );
+    }
+
+    #[test]
+    fn no_matching_instance_is_absent_not_omitted_default() {
+        let unrelated = r#"
+<manifest version="1.0" type="device">
+    <hal format="aidl">
+        <name>android.hardware.foo</name>
+        <version>4</version>
+        <fqname>IKeyMintDevice/default</fqname>
+    </hal>
+</manifest>
+"#;
+
+        assert_eq!(
+            resolve_aidl_hal_version_xmls(
+                [unrelated],
+                KEYMINT_HAL_NAME,
+                KEYMINT_DEVICE_INTERFACE,
+                "default",
+                normalize_keymint_test_version,
+            ),
+            None
+        );
+        assert_eq!(
+            resolve_aidl_hal_version_xmls(
+                [],
+                KEYMINT_HAL_NAME,
+                KEYMINT_DEVICE_INTERFACE,
+                "default",
+                normalize_keymint_test_version,
+            ),
+            None
+        );
+        assert_eq!(
+            resolve_aidl_hal_version_xmls(
+                ["<manifest>", unrelated],
+                KEYMINT_HAL_NAME,
+                KEYMINT_DEVICE_INTERFACE,
+                "default",
+                normalize_keymint_test_version,
+            ),
             None
         );
     }
