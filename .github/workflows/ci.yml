@@ -177,11 +177,21 @@ jobs:
         if-no-files-found: error
         retention-days: 90
 
-    - name: Check Android Rust workspace
-      if: matrix.build-type == 'debug'
+    - name: Check Rust formatting
+      if: ${{ always() && matrix.build-type == 'debug' && steps.prepareArtifact.outcome == 'success' }}
       run: |
         cargo fmt --all -- --check
+
+    - name: Check Android workspace with Clippy
+      if: ${{ always() && matrix.build-type == 'debug' && steps.prepareArtifact.outcome == 'success' }}
+      run: |
+        unset RUSTFLAGS
         cargo clippy --target aarch64-linux-android --workspace --all-targets -- -D warnings
+
+    - name: Compile Android workspace tests
+      if: ${{ always() && matrix.build-type == 'debug' && steps.prepareArtifact.outcome == 'success' }}
+      run: |
+        unset RUSTFLAGS
         cargo test --target aarch64-linux-android --workspace --no-run
 
     - name: Attest release build provenance
