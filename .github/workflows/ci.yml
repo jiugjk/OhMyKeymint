@@ -155,6 +155,7 @@ jobs:
         [patch.crates-io]
         bssl-sys = { path = "$GITHUB_WORKSPACE/boringssl/rust/bssl-sys" }
         EOF
+        chmod +x .cargo-husky/hooks/*
 
     - name: Install Python dependencies
       run: |
