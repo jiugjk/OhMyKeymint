@@ -213,13 +213,18 @@ keybox that you use.
 
 ### What makes a keybox valid?
 
-OMK requires one complete RSA entry and one complete EC entry. For both
-entries, the private key must match its certificate chain. The file must also
+OMK requires at least one complete RSA or EC entry; a keybox may contain
+either algorithm or both. Every supplied private key must match its certificate
+chain. The file must also
 be clean XML, without watermarks, comments inserted into key data, invisible
 characters, or other extra content.
 
-A file working in another module does not prove that it is valid. Some other
-tools accept damaged or incomplete XML that OMK correctly rejects.
+OMK prefers an attestation signing key matching the requested key algorithm.
+If that entry is absent, it uses the other available signing key together with
+its certificate chain. An EC signing key can attest an RSA subject key, and an
+RSA signing key can attest an EC subject key. A missing algorithm does not
+trigger restoration of the bundled template; an invalid supplied entry still
+does.
 
 ### How should I replace `keybox.xml`?
 
